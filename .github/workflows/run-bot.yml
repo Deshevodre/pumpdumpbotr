@@ -1,0 +1,45 @@
+name: MEXC Pump/Dump Bot
+
+# Триггеры: по расписанию + ручной запуск
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # каждые 5 минут
+  workflow_dispatch:       # кнопка "Run workflow" в Actions
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Сначала забираем код
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Устанавливаем нужный Python
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # Кэшируем pip-пакеты между запусками (ускорение)
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Устанавливаем зависимости
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Запускаем бота
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID:   ${{ secrets.CHAT_ID }}
+        run: |
+          python bot.py
