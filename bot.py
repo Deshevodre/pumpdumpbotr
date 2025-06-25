@@ -4,6 +4,7 @@
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
 from stats_manager import weekly_report, stats_command
 from mexc_api import (
     detect_pumps,
@@ -137,26 +138,28 @@ def auto_check(context: CallbackContext):
 # └─────────────────────────────────────────────┘
 def main():
     print("[DEBUG] Bot is starting...")
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
-    # уже есть эти хендлеры:
-    dp.add_handler(CommandHandler('start', start_bot))
-    dp.add_handler(CommandHandler('check', lambda update, ctx: (
-        auto_check(ctx),
-        update.message.reply_text("✅ Ручная проверка выполнена")
+    # Регистрируем наши команды
+    app.add_handler(CommandHandler('start', start_bot))
+    app.add_handler(CommandHandler('check', lambda u, c: (
+        auto_check(c),
+        u.message.reply_text("✅ Ручная проверка выполнена")
     )))
-
-    # ← Вставьте эту строку для stats:
-    dp.add_handler(CommandHandler('stats', stats_command))
+    app.add_handler(CommandHandler('stats', stats_command))
 
     print("[DEBUG] Starting polling...")
-    updater.start_polling()
-    updater.idle()
+    app.run_polling()   # <-- вместо updater.start_polling() и idle()
     print("[DEBUG] Bot has stopped.")
+
 # ┌─────────────────────────────────────────────┐
 # │ БЛОК 9.4: Запуск приложения                │
 # └─────────────────────────────────────────────┘
 if __name__ == '__main__':
     main()
+
 
