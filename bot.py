@@ -1,36 +1,35 @@
 # ┌─────────────────────────────────────────────┐
-# │ БЛОК 1: Импорты и константы для bot.py      │
+# │ bot.py — основной скрипт вашего Telegram-бота │
+# └─────────────────────────────────────────────┘
+
+# ┌─────────────────────────────────────────────┐
+# │ БЛОК 1: Импорты и константы                 │
 # └─────────────────────────────────────────────┘
 from datetime import datetime
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
-from stats_manager import weekly_report, stats_command
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackContext,
+)
 from mexc_api import (
     detect_pumps,
     is_ready_to_dump,
     get_klines,
     plot_price_hourly,
-    get_rsi
+    get_rsi,
 )
-from stats_manager import weekly_report  # если нужен еженедельный отчёт
+from stats_manager import stats_command, weekly_report
 
-# Ваш токен от BotFather
-BOT_TOKEN = '7582763149:AAHAart6lfuro8WlEeL7mygTQDNwrgWuF3Y'
-
-# Параметры для format_signal
-ACCOUNT_BALANCE   = 10000       # депозит в USD
-DAILY_VOLUME_USDT = 1_000_000   # ваш средний дневной объём
-FEES_PERCENT      = 0.02        # комиссия в % (0.02 = 0.02%)
-LEVERAGE          = 100         # плечо
-
-CHAT_ID = None  # заполнится командой /start
+import os
+BOT_TOKEN = os.environ['BOT_TOKEN']
 
 # ──────────────────────────────────────────────
-# БЛОК 1.1: Глобальный кеш сигналов и настройки interval
+# БЛОК 1.1: Глобальный кеш сигналов и настройки
 # ──────────────────────────────────────────────
 last_signal_time: dict[str, datetime] = {}
-MIN_SIGNAL_INTERVAL = 300  # минимум 5 минут между сигналами по одной монете
+MIN_SIGNAL_INTERVAL = 300  # 5 минут между сигналами по одной монете
+CHAT_ID = None  # заполнится в start_bot
 
 # ┌─────────────────────────────────────────────┐
 # │ БЛОК 2: Форматирование текста сигнала       │
@@ -43,7 +42,8 @@ def format_signal(symbol, change, prev_price, curr_price, reasons):
         f"#МОНЕТА: {symbol}",
         f"🟢 Pump: {change:.2f}% ({pp} → {cp})",
         f"💲 Trade: Mexc ({link})",
-        f"x{LEVERAGE} / ~{(ACCOUNT_BALANCE*1/100):.1f}$ / {DAILY_VOLUME_USDT:.1f}$ / {FEES_PERCENT:.3f}%",
+        # x100, $10000 депо, $1_000_000 объём, 0.02% комиссия 
+        f"x100 / ~{(10000*1/100):.1f}$ / {1_000_000:.1f}$ / {0.02:.3f}%",
         "",
         f"📊 RSI: {get_rsi(symbol):.1f}%",
         "",
@@ -63,20 +63,18 @@ def start_bot(update: Update, context: CallbackContext):
     update.message.reply_text(
         "Бот запущен!\n"
         "- Авто-проверка каждые 60 сек\n"
-        "- Введите /check для мгновенной проверки"
+        "- Введите /check для ручной проверки\n"
+        "- /stats — статистика"
     )
 
     jobq = context.job_queue
-    job = jobq.run_repeating(
+    jobq.run_repeating(
         auto_check,
         interval=60,
         first=1,
         context=CHAT_ID,
         job_kwargs={'max_instances': 3}
     )
-    print(f"[DEBUG] Next auto_check at {job.next_run_time} (UTC)")
-
-    # Еженедельный отчёт по воскресеньям в полночь UTC
     jobq.run_daily(
         weekly_report,
         time=datetime.strptime("00:00", "%H:%M").time(),
@@ -84,18 +82,18 @@ def start_bot(update: Update, context: CallbackContext):
     )
 
 # ┌─────────────────────────────────────────────┐
-# │ БЛОК 9.2 (исправленный): Функция auto_check │
+# │ БЛОК 9.2: Функция auto_check                │
 # └─────────────────────────────────────────────┘
 def auto_check(context: CallbackContext):
     pumps = detect_pumps()
     top_pumps = pumps[:5]
-    print(f"[DEBUG][auto] Всего пампов: {len(pumps)}, обрабатываем топ-{len(top_pumps)}")
+    print(f"[DEBUG][auto] Всего пампов: {len(pumps)}, топ-{len(top_pumps)}")
 
     for symbol, change in top_pumps:
         now = datetime.utcnow()
         last = last_signal_time.get(symbol)
         if last and (now - last).total_seconds() < MIN_SIGNAL_INTERVAL:
-            print(f"[DEBUG][auto] Пропускаем {symbol}, был сигнал {int((now-last).total_seconds())} сек назад")
+            print(f"[DEBUG][auto] Пропускаем {symbol}, был {int((now-last).total_seconds())} сек назад")
             continue
 
         reasons = is_ready_to_dump(symbol)
@@ -105,55 +103,47 @@ def auto_check(context: CallbackContext):
 
         dfm = get_klines(symbol, '1m', 120)
         if dfm.shape[0] < 61:
-            print(f"[DEBUG][auto] Недостаточно 1m-данных для {symbol}, пропускаем")
+            print(f"[DEBUG][auto] Недостаточно данных для {symbol}")
             continue
 
         prev_price = dfm['close'].iloc[-61]
         curr_price = dfm['close'].iloc[-1]
         print(f"[DEBUG][auto] {symbol}: prev={prev_price}, curr={curr_price}")
 
-        # 1) Отправляем текст и сразу обновляем кеш, чтобы исключить дубли
+        # ── Текст сигнала
         msg = format_signal(symbol, change, prev_price, curr_price, reasons)
         context.bot.send_message(chat_id=CHAT_ID, text=msg)
         last_signal_time[symbol] = now
-        print(f"[DEBUG][auto] Текст отправлен по {symbol}, кеш обновлён")
+        print(f"[DEBUG][auto] Отправлен текст по {symbol}")
 
-        # 2) Пытаемся отправить график, если он есть
-        img_path = plot_price_hourly(symbol)
-        if img_path:
+        # ── График
+        img = plot_price_hourly(symbol)
+        if img:
             try:
-                with open(img_path, 'rb') as img_file:
-                    context.bot.send_photo(chat_id=CHAT_ID, photo=img_file)
-                print(f"[DEBUG][auto] График отправлен по {symbol}")
+                with open(img, 'rb') as f:
+                    context.bot.send_photo(chat_id=CHAT_ID, photo=f)
+                print(f"[DEBUG][auto] Отправлен график по {symbol}")
             except Exception as e:
-                print(f"[DEBUG][auto] Ошибка при отправке графика {symbol}: {e}")
+                print(f"[DEBUG][auto] Ошибка графика {symbol}: {e}")
         else:
-            print(f"[DEBUG][auto] График для {symbol} пропущен")
-
-        # 3) Готово для этой монеты — переходим к следующей
-
+            print(f"[DEBUG][auto] График не построен для {symbol}")
 
 # ┌─────────────────────────────────────────────┐
 # │ БЛОК 9.3: main и регистрация команд         │
 # └─────────────────────────────────────────────┘
 def main():
     print("[DEBUG] Bot is starting...")
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Регистрируем наши команды
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('check', lambda u, c: (
         auto_check(c),
-        u.message.reply_text("✅ Ручная проверка выполнена")
+        u.message.reply_text("✅ Ручной прогон выполнен")
     )))
     app.add_handler(CommandHandler('stats', stats_command))
 
     print("[DEBUG] Starting polling...")
-    app.run_polling()   # <-- вместо updater.start_polling() и idle()
+    app.run_polling()
     print("[DEBUG] Bot has stopped.")
 
 # ┌─────────────────────────────────────────────┐
@@ -161,5 +151,3 @@ def main():
 # └─────────────────────────────────────────────┘
 if __name__ == '__main__':
     main()
-
-
